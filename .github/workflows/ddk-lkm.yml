@@ -37,6 +37,11 @@ on:
         required: false
         default: ''
         type: string
+      kmi_filter:
+        description: 'Single KMI to build (empty = all). Filters the matrix in the caller.'
+        required: false
+        default: ''
+        type: string
 
 jobs:
   build-kernelsu-ko:
@@ -45,6 +50,9 @@ jobs:
     container:
       image: ghcr.io/ylarod/ddk-min:${{ inputs.kmi }}-${{ inputs.ddk_release }}
       options: --privileged
+
+    # Skip if caller requested a specific KMI and this isn't it
+    if: ${{ inputs.kmi_filter == '' || inputs.kmi_filter == inputs.kmi }}
 
     steps:
     - name: Checkout source code

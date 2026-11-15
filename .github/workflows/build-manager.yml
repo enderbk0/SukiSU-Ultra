@@ -66,33 +66,52 @@ jobs:
       keystore: ${{ steps.gen.outputs.keystore }}
       keystore_password: ${{ steps.gen.outputs.keystore_password }}
       key_password: ${{ steps.gen.outputs.key_password }}
+      is_pr: ${{ steps.is_pr.outputs.value }}
 
     steps:
-      - name: Generate temporary keystore
-        if: github.event_name == 'pull_request'
+      - name: Detect event type
+        id: is_pr
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "value=true" >> $GITHUB_OUTPUT
+          else
+            echo "value=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Generate keystore (always)
         id: gen
         run: |
-          KEYSTORE_PASSWORD=$(openssl rand -hex 32)
-          KEY_PASSWORD=$(openssl rand -hex 32)
+          # Always generate a consistent identity for the KO.
+          # On PR: temp 1-day cert. On push/tag: use prod secret if available,
+          # otherwise fall back to the same deterministic generation.
+          if [ "${{ github.event_name }}" = "pull_request" ] || [ -z "${{ secrets.KEYSTORE }}" ]; then
+            KEYSTORE_PASSWORD=$(openssl rand -hex 32)
+            KEY_PASSWORD=$(openssl rand -hex 32)
 
-          echo "keystore_password=$KEYSTORE_PASSWORD" >> $GITHUB_OUTPUT
-          echo "key_password=$KEY_PASSWORD" >> $GITHUB_OUTPUT
+            echo "keystore_password=$KEYSTORE_PASSWORD" >> $GITHUB_OUTPUT
+            echo "key_password=$KEY_PASSWORD" >> $GITHUB_OUTPUT
 
-          keytool -genkeypair \
-            -alias pr-key \
-            -keyalg RSA \
-            -keysize 2048 \
-            -validity 1 \
-            -storepass "$KEYSTORE_PASSWORD" \
-            -keypass "$KEY_PASSWORD" \
-            -dname "CN=KernelSU PR Build" \
-            -storetype JKS \
-            -keystore pr-key.jks
+            keytool -genkeypair \
+              -alias pr-key \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 1 \
+              -storepass "$KEYSTORE_PASSWORD" \
+              -keypass "$KEY_PASSWORD" \
+              -dname "CN=KernelSU PR Build" \
+              -storetype JKS \
+              -keystore pr-key.jks
 
-          echo "keystore=$(base64 -w 0 pr-key.jks)" >> $GITHUB_OUTPUT
+            echo "keystore=$(base64 -w 0 pr-key.jks)" >> $GITHUB_OUTPUT
+          else
+            # Production build: decode the provided secret
+            echo "${{ secrets.KEYSTORE }}" | base64 -d > pr-key.jks
+            echo "keystore=${{ secrets.KEYSTORE }}" >> $GITHUB_OUTPUT
+            echo "keystore_password=${{ secrets.KEYSTORE_PASSWORD }}" >> $GITHUB_OUTPUT
+            echo "key_password=${{ secrets.KEY_PASSWORD }}" >> $GITHUB_OUTPUT
+          fi
 
       - name: Extract certificate hash and size
-        if: github.event_name == 'pull_request'
         id: extract
         env:
           STORE_PASS: ${{ steps.gen.outputs.keystore_password }}
@@ -654,17 +673,17 @@ jobs:
           PROD_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
 
         run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-
+          # Use the PR keystore for all events now; generate-key always produces one.
+          # On PR events it's a temp cert; on push it's either temp (no secret) or prod (has secret).
+          if [ "${{ github.event_name }}" = "pull_request" ] || [ -z "${{ secrets.KEYSTORE }}" ]; then
             echo "$PR_KEYSTORE" | base64 -d > pr-key.jks
 
             echo "SIGN_KEYSTORE_FILE=pr-key.jks" >> "$GITHUB_ENV"
             echo "SIGN_KEY_ALIAS=pr-key" >> "$GITHUB_ENV"
             echo "SIGN_KEYSTORE_PASSWORD=$PR_KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
             echo "SIGN_KEY_PASSWORD=$PR_KEY_PASSWORD" >> "$GITHUB_ENV"
-
           else
-
+            # Production path: use the prod secret
             test -n "$PROD_KEYSTORE"
 
             echo "$PROD_KEYSTORE" | base64 -d > key.jks
@@ -673,7 +692,6 @@ jobs:
             echo "SIGN_KEY_ALIAS=$PROD_KEY_ALIAS" >> "$GITHUB_ENV"
             echo "SIGN_KEYSTORE_PASSWORD=$PROD_KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
             echo "SIGN_KEY_PASSWORD=$PROD_KEY_PASSWORD" >> "$GITHUB_ENV"
-
           fi
 
 
@@ -878,17 +896,32 @@ jobs:
       - name: Prepare signing inputs
         if: steps.need_upload.outputs.UPLOAD == 'true'
         env:
+          PR_KEYSTORE: ${{ needs.generate-key.outputs.keystore }}
+          PR_KEYSTORE_PASSWORD: ${{ needs.generate-key.outputs.keystore_password }}
+          PR_KEY_PASSWORD: ${{ needs.generate-key.outputs.key_password }}
+
           PROD_KEYSTORE: ${{ secrets.KEYSTORE }}
           PROD_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           PROD_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           PROD_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          test -n "$PROD_KEYSTORE"
-          echo "$PROD_KEYSTORE" | base64 -d > key.jks
-          echo "SIGN_KEYSTORE_FILE=key.jks" >> "$GITHUB_ENV"
-          echo "SIGN_KEY_ALIAS=$PROD_KEY_ALIAS" >> "$GITHUB_ENV"
-          echo "SIGN_KEYSTORE_PASSWORD=$PROD_KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
-          echo "SIGN_KEY_PASSWORD=$PROD_KEY_PASSWORD" >> "$GITHUB_ENV"
+          # Use the PR keystore for all events; generate-key always produces one.
+          if [ -z "${{ secrets.KEYSTORE }}" ]; then
+            echo "$PR_KEYSTORE" | base64 -d > pr-key.jks
+
+            echo "SIGN_KEYSTORE_FILE=pr-key.jks" >> "$GITHUB_ENV"
+            echo "SIGN_KEY_ALIAS=pr-key" >> "$GITHUB_ENV"
+            echo "SIGN_KEYSTORE_PASSWORD=$PR_KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+            echo "SIGN_KEY_PASSWORD=$PR_KEY_PASSWORD" >> "$GITHUB_ENV"
+          else
+            test -n "$PROD_KEYSTORE"
+            echo "$PROD_KEYSTORE" | base64 -d > key.jks
+
+            echo "SIGN_KEYSTORE_FILE=key.jks" >> "$GITHUB_ENV"
+            echo "SIGN_KEY_ALIAS=$PROD_KEY_ALIAS" >> "$GITHUB_ENV"
+            echo "SIGN_KEYSTORE_PASSWORD=$PROD_KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+            echo "SIGN_KEY_PASSWORD=$PROD_KEY_PASSWORD" >> "$GITHUB_ENV"
+          fi
 
 
       # --------------------------------------------------------

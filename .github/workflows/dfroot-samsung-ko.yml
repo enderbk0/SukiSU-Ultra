@@ -99,10 +99,14 @@ jobs:
           cd kernel
 
           echo "=== Building for KMI: ${{ matrix.kmi }} ==="
+          # The ddk-min image normally exports KDIR for its KMI; fall back to
+          # the conventional path rather than failing the whole matrix.
+          if [ -z "${KDIR:-}" ] && [ -d "/opt/ddk/kdir/${{ matrix.kmi }}" ]; then
+            export KDIR="/opt/ddk/kdir/${{ matrix.kmi }}"
+          fi
           echo "KDIR=${KDIR:-<unset>}"
           [ -n "${KDIR:-}" ] || { echo "::error::KDIR not provided by the ddk image"; exit 1; }
 
-          # KDP is always-on in the port; KPM is SukiSU's extension module.
           CONFIG_KSU=m CONFIG_KPM=y CC=clang make \
             KSU_PACKAGE_NAME="$PACKAGE_NAME" \
             KSU_EXPECTED_SIZE="$EXPECTED_SIZE" \

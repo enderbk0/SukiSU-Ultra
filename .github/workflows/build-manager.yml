@@ -600,6 +600,7 @@ jobs:
 
       - name: Place manager apk and ksud artifacts
         id: place_artifacts
+        working-directory: ${{ github.workspace }}
         run: |
           set -e
 
@@ -648,6 +649,9 @@ jobs:
 
           cp -f "$RISCV64_KSUD" \
             target/riscv64-linux-android/release/ksud
+
+          # Verify ksud binaries are in place for repack_apk.py
+          ls -la target/*/release/ksud
 
 
       # --------------------------------------------------------
@@ -734,6 +738,23 @@ jobs:
       # Upload final APK
       # --------------------------------------------------------
 
+
+      # --------------------------------------------------------
+      # Verify libksud.so injection
+      # --------------------------------------------------------
+
+      - name: Verify libksud.so injection
+        run: |
+          set -e
+          APK=$(find dist -name "*.apk" | head -n 1)
+          test -n "$APK"
+          echo "Checking $APK for libksud.so..."
+          unzip -l "$APK" | grep 'libksud\.so' || {
+            echo "ERROR: libksud.so NOT FOUND in repacked APK!"
+            unzip -l "$APK" | grep 'lib/'
+            exit 1
+          }
+          echo "SUCCESS: libksud.so found for all architectures"
       - name: Upload build artifact
         if: ${{ github.event_name == 'pull_request' ||
           github.event_name == 'workflow_dispatch' ||

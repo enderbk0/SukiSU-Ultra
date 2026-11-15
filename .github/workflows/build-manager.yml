@@ -750,9 +750,33 @@ jobs:
 
 
 
-  publish-manager-ci:
+  upload-telegram:
     needs: repack-manager
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && ${{ secrets.KEYSTORE != '' }}
+
+    if: github.event_name != 'pull_request' &&
+        github.event_name != 'workflow_dispatch' &&
+        needs.repack-manager.result == 'success'
+
+    runs-on: ubuntu-latest
+
+  # Check if KEYSTORE secret is configured (for publish-manager-ci gating)
+  check-keystore-secret:
+    runs-on: ubuntu-latest
+    outputs:
+      has_keystore: ${{ steps.check.outputs.has_keystore }}
+    steps:
+      - name: Check KEYSTORE secret
+        id: check
+        run: |
+          if [ -n "${{ secrets.KEYSTORE }}" ]; then
+            echo "has_keystore=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_keystore=false" >> $GITHUB_OUTPUT
+          fi
+
+  publish-manager-ci:
+    needs: [repack-manager, check-keystore-secret]
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && needs.check-keystore-secret.outputs.has_keystore == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write

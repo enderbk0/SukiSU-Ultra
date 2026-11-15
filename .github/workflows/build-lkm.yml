@@ -28,8 +28,40 @@ on:
         default: false
         type: boolean
   workflow_dispatch:
+    inputs:
+      package_name:
+        description: 'Manager package name'
+        required: false
+        default: 'com.sukisu.ultra'
+        type: string
+      expected_size:
+        description: 'Expected signature size (hex)'
+        required: false
+        default: '0x35c'
+        type: string
+      expected_hash:
+        description: 'Expected signature hash (SHA256)'
+        required: false
+        default: '947ae944f3de4ed4c21a7e4f7953ecf351bfa2b36239da37a34111ad29993eef'
+        type: string
+      version_code:
+        description: 'KernelSU version code'
+        required: false
+        default: ''
+        type: string
+      release_build:
+        description: 'Mark as release build'
+        required: false
+        default: false
+        type: boolean
+      kmi:
+        description: 'Single KMI to build (empty = all)'
+        required: false
+        default: ''
+        type: string
 jobs:
   build-lkm:
+    if: ${{ github.event.inputs.kmi == '' || github.event.inputs.kmi == matrix.kmi }}
     strategy:
       matrix:
         kmi:
@@ -44,8 +76,8 @@ jobs:
     uses: ./.github/workflows/ddk-lkm.yml
     with:
       kmi: ${{ matrix.kmi }}
-      package_name: ${{ inputs.package_name || '' }}
-      expected_size: ${{ inputs.expected_size || '' }}
-      expected_hash: ${{ inputs.expected_hash || '' }}
-      version_code: ${{ inputs.version_code || '' }}
+      package_name: ${{ inputs.package_name }}
+      expected_size: ${{ inputs.expected_size }}
+      expected_hash: ${{ inputs.expected_hash }}
+      version_code: ${{ inputs.version_code }}
       release_build: ${{ inputs.release_build }}

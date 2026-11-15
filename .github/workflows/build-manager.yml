@@ -752,7 +752,7 @@ jobs:
 
   publish-manager-ci:
     needs: repack-manager
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && ${{ secrets.KEYSTORE != '' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write

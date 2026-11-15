@@ -748,17 +748,6 @@ jobs:
           name: ${{ steps.determine.outputs.title }}
           path: dist/*.apk
 
-
-
-  upload-telegram:
-    needs: repack-manager
-
-    if: github.event_name != 'pull_request' &&
-        github.event_name != 'workflow_dispatch' &&
-        needs.repack-manager.result == 'success'
-
-    runs-on: ubuntu-latest
-
   # Check if KEYSTORE secret is configured (for publish-manager-ci gating)
   check-keystore-secret:
     runs-on: ubuntu-latest

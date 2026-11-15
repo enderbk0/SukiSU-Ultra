@@ -1,4 +1,5 @@
 #include "selinux_hide.h"
+#include "compat/jailbreak.h"
 #include "infra/symbol_resolver.h"
 #include "linux/jump_label.h"
 #include "linux/rcupdate.h"
@@ -84,6 +85,12 @@ static void (*context_struct_compute_av_fn)(struct policydb *policydb, struct co
 
 static write_op_fn *context_write, *access_write;
 static write_op_fn orig_context_write, orig_access_write;
+/*
+ * Under Samsung RKP the original function pointer is replaced by a branch to
+ * our stub, so calling it recurses forever. callthru_* either mirrors the
+ * original pointer (no RKP) or points at the stub's resume site (RKP).
+ */
+static write_op_fn callthru_context_write, callthru_access_write;
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0)
 #define ksu_avc_has_perm_compat(...) avc_has_perm(__VA_ARGS__)
@@ -105,7 +112,7 @@ static ssize_t my_write_context(struct file *file, char *buf, size_t size)
 {
     // apply to all app uids
     if (likely(current_uid().val < 10000)) {
-        return orig_context_write(file, buf, size);
+        return callthru_context_write(file, buf, size);
     }
     char *canon = NULL;
     u32 sid, len;
@@ -143,7 +150,7 @@ static ssize_t my_write_access(struct file *file, char *buf, size_t size)
 {
     // apply to all app uids
     if (likely(current_uid().val < 10000)) {
-        return orig_access_write(file, buf, size);
+        return callthru_access_write(file, buf, size);
     }
     char *scon = NULL, *tcon = NULL;
     u32 ssid, tsid, sconlen, tconlen;
@@ -238,6 +245,7 @@ static u32 ptrace_parent_sid(void)
 }
 
 typedef int (*setprocattr_fn)(const char *name, void *value, size_t size);
+static setprocattr_fn callthru_setprocattr;
 static int __nocfi my_setprocattr(const char *name, void *value, size_t size)
 {
     if (likely(current_uid().val < 10000)) {
@@ -321,7 +329,7 @@ abort_change:
     return error;
 
 call_orig:
-    return ((setprocattr_fn)selinux_setprocattr_hook.original)(name, value, size);
+    return callthru_setprocattr(name, value, size);
 }
 
 static int (*inode_doinit_with_dentry_fn)(struct inode *inode, struct dentry *dentry);
@@ -494,6 +502,7 @@ out:
 
 typedef int (*sel_open_handle_status_fn)(struct inode *inode, struct file *filp);
 static sel_open_handle_status_fn orig_sel_open_handle_status, *sel_open_handle_status_slot;
+static sel_open_handle_status_fn callthru_sel_open_handle_status;
 static int my_sel_open_handle_status(struct inode *inode, struct file *filp)
 {
     if (likely(current_uid().val >= 10000 && ksu_selinux_hide_enabled)) {
@@ -504,7 +513,7 @@ static int my_sel_open_handle_status(struct inode *inode, struct file *filp)
         }
     }
 
-    int ret = orig_sel_open_handle_status(inode, filp);
+    int ret = callthru_sel_open_handle_status(inode, filp);
     if (static_branch_unlikely(&fake_status_initialize_key) && !ret && !fake_status) {
         initialize_fake_status();
     }
@@ -548,27 +557,38 @@ static int ksu_selinux_hide_enable()
     orig_context_write = *context_write;
     // Keep backup once hooks may run, including failed enable attempts
     ksu_selinux_hide_keep_backup = true;
+    if (!static_branch_unlikely(&ksu_rkp_key))
+        callthru_context_write = orig_context_write;
     ret = ksu_patch_text(context_write, &my, sizeof(my), KSU_PATCH_TEXT_FLUSH_DCACHE);
     if (ret) {
         pr_err("selinux_hide: init: patch_text context_write err: %d\n", ret);
         goto unhook;
     }
+    if (static_branch_unlikely(&ksu_rkp_key))
+        callthru_context_write = (write_op_fn)ksu_rkp_get_stub((void *)orig_context_write);
 
     access_write = &selinux_write_op[SEL_ACCESS];
     pr_info("selinux_hide: access_write: 0x%lx [%pSb]\n", (unsigned long)*access_write, *access_write);
     my = my_write_access;
     orig_access_write = *access_write;
+    if (!static_branch_unlikely(&ksu_rkp_key))
+        callthru_access_write = orig_access_write;
     ret = ksu_patch_text(access_write, &my, sizeof(my), KSU_PATCH_TEXT_FLUSH_DCACHE);
     if (ret) {
         pr_err("selinux_hide: init: patch_text access_write err: %d\n", ret);
         goto unhook;
     }
+    if (static_branch_unlikely(&ksu_rkp_key))
+        callthru_access_write = (write_op_fn)ksu_rkp_get_stub((void *)orig_access_write);
 
     ret = ksu_lsm_hook(&selinux_setprocattr_hook);
     if (ret) {
         pr_err("selinux_hide: init: selinux_setprocattr_hook err: %d\n", ret);
         goto unhook;
     }
+    callthru_setprocattr = static_branch_unlikely(&ksu_rkp_key) ?
+                               (setprocattr_fn)ksu_rkp_get_stub(selinux_setprocattr_hook.original) :
+                               (setprocattr_fn)selinux_setprocattr_hook.original;
 
     ret = ksu_lsm_hook(&selinux_inode_setxattr_hook);
     if (ret) {
@@ -591,6 +611,7 @@ static void ksu_selinux_hide_unhook()
         ret =
             ksu_patch_text(context_write, &orig_context_write, sizeof(orig_context_write), KSU_PATCH_TEXT_FLUSH_DCACHE);
         orig_context_write = NULL;
+        callthru_context_write = NULL;
         if (ret) {
             pr_err("selinux_hide: exit: patch_text context_write err: %d\n", ret);
         }
@@ -598,6 +619,7 @@ static void ksu_selinux_hide_unhook()
     if (orig_access_write) {
         ret = ksu_patch_text(access_write, &orig_access_write, sizeof(orig_access_write), KSU_PATCH_TEXT_FLUSH_DCACHE);
         orig_access_write = NULL;
+        callthru_access_write = NULL;
         if (ret) {
             pr_err("selinux_hide: exit: patch_text access_write err: %d\n", ret);
         }
@@ -606,10 +628,12 @@ static void ksu_selinux_hide_unhook()
         ret = ksu_patch_text(sel_open_handle_status_slot, &orig_sel_open_handle_status,
                              sizeof(orig_sel_open_handle_status), KSU_PATCH_TEXT_FLUSH_DCACHE);
         orig_sel_open_handle_status = NULL;
+        callthru_sel_open_handle_status = NULL;
         if (ret) {
             pr_err("selinux_hide: exit: patch_text sel_open_handle_status err: %d\n", ret);
         }
     }
+    callthru_setprocattr = NULL;
     ksu_lsm_unhook(&selinux_setprocattr_hook);
 }
 
@@ -689,12 +713,18 @@ static void hook_selinux_status_open()
     }
     sel_open_handle_status_fn new_fn = my_sel_open_handle_status;
     orig_sel_open_handle_status = *sel_open_handle_status_slot;
+    if (!static_branch_unlikely(&ksu_rkp_key))
+        callthru_sel_open_handle_status = orig_sel_open_handle_status;
     int ret = ksu_patch_text(sel_open_handle_status_slot, &new_fn, sizeof(new_fn), KSU_PATCH_TEXT_FLUSH_DCACHE);
     if (ret) {
         pr_err("selinux_hide: init: patch_text sel_open_handle_status err: %d\n", ret);
         sel_open_handle_status_slot = NULL;
         orig_sel_open_handle_status = NULL;
+        callthru_sel_open_handle_status = NULL;
+        return;
     }
+    if (static_branch_unlikely(&ksu_rkp_key))
+        callthru_sel_open_handle_status = (sel_open_handle_status_fn)ksu_rkp_get_stub((void *)orig_sel_open_handle_status);
 }
 
 void __init ksu_selinux_hide_init()

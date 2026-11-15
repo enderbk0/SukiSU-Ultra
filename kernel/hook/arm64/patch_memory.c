@@ -6,6 +6,7 @@
 #ifdef __aarch64__
 
 #include "../patch_memory.h"
+#include "compat/jailbreak.h"
 #include "klog.h" // IWYU pragma: keep
 #include "linux/cpumask.h"
 #include "linux/gfp.h" // IWYU pragma: keep
@@ -177,6 +178,15 @@ static int ksu_patch_text_cb(void *arg)
 int ksu_patch_text(void *dst, void *src, size_t len, int flags)
 {
     int ret;
+
+    /*
+     * Samsung RKP: patching kernel text in place trips the stage-2 protection
+     * check. Route pointer-sized redirections through a branch stub allocated
+     * in a private RO+X page instead. See compat/rkp.c.
+     */
+    if (static_branch_unlikely(&ksu_rkp_key) && len == sizeof(void *))
+        return ksu_rkp_branch_patch(dst, src);
+
     struct patch_text_info info = {
         .dst = dst,
         .src = src,

@@ -16,6 +16,7 @@
 
 #include "policy/allowlist.h"
 #include "policy/app_profile.h"
+#include "compat/jailbreak.h"
 #include "klog.h" // IWYU pragma: keep
 #include "selinux/selinux.h"
 #include "infra/su_mount_ns.h"
@@ -204,7 +205,16 @@ int escape_with_root_profile(void)
     setup_groups(profile, cred);
     setup_selinux(profile->selinux_domain, cred);
 
-    commit_creds(cred);
+    /*
+     * Samsung KDP (Kernel Data Protection) keeps stage-2 protected pages
+     * write-protected; a bare commit_creds() then faults. ksu_commit_creds()
+     * falls through to commit_creds() when KDP is absent.
+     */
+    ret = ksu_commit_creds(cred);
+    if (ret) {
+        pr_err("ksu_commit_creds failed: %d\n", ret);
+        goto out_abort_creds;
+    }
 
     disable_seccomp();
 

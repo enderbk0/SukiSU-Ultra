@@ -1,5 +1,10 @@
 kernelsu-objs := core/init.o
 
+kernelsu-objs += compat/jailbreak.o
+kernelsu-objs += compat/kdp.o
+kernelsu-objs += compat/defex.o
+kernelsu-objs += compat/rkp.o
+
 kernelsu-objs += feature/kernel_umount.o
 kernelsu-objs += feature/module_blacklist.o
 kernelsu-objs += feature/mount_hide.o

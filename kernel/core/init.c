@@ -30,6 +30,7 @@
 #include "feature/shell_su_adb_only.h"
 #include "feature/module_blacklist.h"
 #include "infra/symbol_resolver.h"
+#include "compat/jailbreak.h"
 #include "preinit/preinit.h"
 #include "extension/extension.h"
 
@@ -149,6 +150,8 @@ int __init kernelsu_init(void)
     pr_info("initializing symbol resolver\n");
     ksu_init_symbol_resolver();
 
+    init_jailbreak();
+
     ret = ksu_selinux_inode_init();
     if (ret) {
         put_cred(ksu_cred);
@@ -262,6 +265,8 @@ void __exit kernelsu_exit(void)
     ksu_feature_exit();
     ksu_module_blacklist_exit();
     ksu_extension_exit();
+
+    exit_jailbreak();
 
     put_cred(ksu_cred);
 }
